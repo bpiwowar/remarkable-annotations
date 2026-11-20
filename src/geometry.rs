@@ -122,9 +122,11 @@ pub fn stroke_to_path(points: &[Point], page: &PageSize) -> Vec<f64> {
 
 /// The inverse of [`stroke_to_path`].
 pub fn pdf_path_to_rm(path: &[f64], page: &PageSize) -> Vec<Point> {
-    path.chunks_exact(2)
-        .map(|c| {
-            let [x, y] = pdf_to_rm(c[0], c[1], page);
+    path.as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&[px, py]| {
+            let [x, y] = pdf_to_rm(px, py, page);
             Point { x, y }
         })
         .collect()
