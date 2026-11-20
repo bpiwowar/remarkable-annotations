@@ -744,7 +744,7 @@ fn parse_entry_line(line: &str) -> Result<RawEntry> {
     })
 }
 
-/// Options of [`Session::put_pdf`].
+/// Options of [`Session::put_pdf`] and [`Session::put_epub`].
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct PutPdfOptions {
@@ -848,7 +848,24 @@ impl Session {
         now: f64,
     ) -> Operation {
         self.op(move |c| async move {
-            c.put_pdf(&name, bytes, &opts, &id, &page_id, now)
+            c.put_file_doc("pdf", &name, bytes, &opts, &id, &page_id, now)
+                .await
+                .map(|r| ref_json(&r))
+        })
+    }
+
+    /// Uploads an EPUB (`putEpub`), with the same options as [`Session::put_pdf`].
+    pub fn put_epub(
+        &self,
+        name: String,
+        bytes: Vec<u8>,
+        opts: PutPdfOptions,
+        id: String,
+        page_id: String,
+        now: f64,
+    ) -> Operation {
+        self.op(move |c| async move {
+            c.put_file_doc("epub", &name, bytes, &opts, &id, &page_id, now)
                 .await
                 .map(|r| ref_json(&r))
         })
@@ -955,7 +972,7 @@ impl Session {
                 refresh: false,
             };
             let r = c
-                .put_pdf(&name, bytes, &opts, &uuids[0], &uuids[1], now)
+                .put_file_doc("pdf", &name, bytes, &opts, &uuids[0], &uuids[1], now)
                 .await?;
             let Some(n) = page_count.filter(|&n| n >= 1) else {
                 return Ok(ref_json(&r));
@@ -1098,9 +1115,11 @@ struct Doc {
 }
 
 impl Ctx {
-    /// `#putFile`: a new document from a file.
-    async fn put_pdf(
+    /// `#putFile`: a new document from a file; `file_type` is "pdf" or "epub".
+    #[allow(clippy::too_many_arguments)]
+    async fn put_file_doc(
         &self,
+        file_type: &str,
         name: &str,
         bytes: Vec<u8>,
         opts: &PutPdfOptions,
@@ -1127,7 +1146,7 @@ impl Ctx {
             .collect();
         let content = json!({
             "coverPageNumber": -1, "documentMetadata": {}, "extraMetadata": {},
-            "lineHeight": -1, "margins": 125, "orientation": "portrait", "fileType": "pdf",
+            "lineHeight": -1, "margins": 125, "orientation": "portrait", "fileType": file_type,
             "formatVersion": 1, "tags": tags, "fontName": "", "textAlignment": "justify",
             "textScale": 1, "zoomMode": "bestFit", "originalPageCount": 1, "pageCount": 1,
             "pageTags": [], "pages": [page_id], "redirectionPageMap": [0],
@@ -1139,7 +1158,7 @@ impl Ctx {
         let pagedata_entry = self
             .put_file(&format!("{id}.pagedata"), b"\n".to_vec())
             .await?;
-        let file_entry = self.put_file(&format!("{id}.pdf"), bytes).await?;
+        let file_entry = self.put_file(&format!("{id}.{file_type}"), bytes).await?;
         let entry = self
             .put_entries(
                 id,

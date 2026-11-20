@@ -139,7 +139,7 @@ const items = JSON.parse((await run(session.listItems(false))).json);
 ```
 
 Operations: `listItems`, `listRefs`, `getContent`, `getMetadata`,
-`getEntries`, `getHash`, `putPdf`, `putFolder`, `updateDocument`, `move`,
+`getEntries`, `getHash`, `putPdf`, `putEpub`, `putFolder`, `updateDocument`, `move`,
 `purge`, `putRmPages` (one commit; `hashNotFound` if the document changed),
 and the document helpers `uploadPdf` (with the full page list),
 `ensureFolder`, `fetchAnnotations` and `mapPdfPages`; `cloudRegister` and

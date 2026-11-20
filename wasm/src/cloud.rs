@@ -260,6 +260,24 @@ impl CloudSession {
         ))
     }
 
+    /// Same arguments as `putPdf`.
+    #[wasm_bindgen(js_name = putEpub)]
+    pub fn put_epub(
+        &self,
+        name: String,
+        bytes: Vec<u8>,
+        options: &str,
+        id: String,
+        page_id: String,
+        now: f64,
+    ) -> Result<CloudOperation, JsError> {
+        let opts: PutPdfOptions =
+            serde_json::from_str(options).map_err(|e| JsError::new(&e.to_string()))?;
+        Ok(CloudOperation(
+            self.0.put_epub(name, bytes, opts, id, page_id, now),
+        ))
+    }
+
     #[wasm_bindgen(js_name = putFolder)]
     pub fn put_folder(&self, name: String, parent: String, id: String, now: f64) -> CloudOperation {
         CloudOperation(self.0.put_folder(name, parent, id, now))

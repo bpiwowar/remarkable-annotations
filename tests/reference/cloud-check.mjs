@@ -54,6 +54,8 @@ const RM_A2 = fixture("rm/rmscene/Wikipedia_highlighted_p1.rm");
 const RM_B = fixture("rm/rmscene/Color_and_tool_v3.14.4.rm");
 const RM_NEW = fixture("page/lines_append.rm");
 const PDF = fixture("pdf/mixed_generate.pdf");
+// the cloud stores an EPUB as opaque bytes: any content will do
+const EPUB = new TextEncoder().encode("PK\x03\x04 not really an epub");
 
 const ID = {
   zotero: "10000000-0000-4000-8000-000000000001",
@@ -151,6 +153,7 @@ async function runRmapi(api, cloud, op) {
       return api.raw.getHash(entries.find((e) => e.id.endsWith(op.suffix)));
     }
     case "putPdf": return api.putPdf(op.name, PDF, { parent: op.parent, tags: op.tags });
+    case "putEpub": return api.putEpub(op.name, EPUB, { parent: op.parent, tags: op.tags });
     case "putFolder": return api.putFolder(op.name, { parent: op.parent });
     case "updateDocument": return api.updateDocument(ref, op.update);
     case "move": return api.move(ref, op.parent);
@@ -235,6 +238,8 @@ function runRust(s, cloud, op, opIndex) {
     })();
     case "putPdf":
       return drive(cloud, s.putPdf(op.name, PDF, json({ parent: op.parent ?? "", tags: op.tags }), uuids[0], uuids[1], NOW));
+    case "putEpub":
+      return drive(cloud, s.putEpub(op.name, EPUB, json({ parent: op.parent ?? "", tags: op.tags }), uuids[0], uuids[1], NOW));
     case "putFolder": return drive(cloud, s.putFolder(op.name, op.parent ?? "", uuids[0], NOW));
     case "updateDocument": return drive(cloud, s.updateDocument(ref.id, ref.hash, json(op.update)));
     case "move": return drive(cloud, s.move(ref.id, ref.hash, op.parent));
@@ -296,6 +301,8 @@ const READS = [
 const WRITES = [
   { op: "putFolder", name: "New folder", parent: ID.zotero },
   { op: "putPdf", name: "Upload ✓", parent: ID.papers, tags: ["a", "b"] },
+  { op: "putEpub", name: "Book ✓", parent: ID.zotero, tags: ["e"] },
+  { op: "putEpub", name: "Root book" },
   { op: "uploadPdf", name: "With pages", folder: ID.zotero, tags: ["z"], pageCount: 3, pageTags: { 2: ["y", "x"], 0: ["w"], 7: ["none"] } },
   { op: "uploadPdf", name: "No count", folder: "" },
   { op: "ensureFolder", path: " Zotero / Papers /Deep/ Deeper " },

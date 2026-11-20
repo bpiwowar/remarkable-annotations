@@ -239,6 +239,22 @@ impl PyCloudSession {
         ))
     }
 
+    /// Same arguments as `put_pdf`.
+    fn put_epub(
+        &self,
+        name: String,
+        data: Vec<u8>,
+        options: &str,
+        id: String,
+        page_id: String,
+        now: f64,
+    ) -> PyResult<PyCloudOperation> {
+        let opts: PutPdfOptions = serde_json::from_str(options).map_err(value_err)?;
+        Ok(PyCloudOperation(
+            self.0.put_epub(name, data, opts, id, page_id, now),
+        ))
+    }
+
     fn put_folder(&self, name: String, parent: String, id: String, now: f64) -> PyCloudOperation {
         PyCloudOperation(self.0.put_folder(name, parent, id, now))
     }
