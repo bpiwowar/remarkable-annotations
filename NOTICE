@@ -8,7 +8,7 @@ This product includes software derived from the following projects:
 rmapi-js (https://github.com/erikbrinkman/rmapi-js), MIT license,
 Copyright (c) 2024 Erik Brinkman
   The .rm v6 scene parser and serializer (src/scene) are ported from its
-  `rm6` module.
+  `rm6` module, and the cloud client (src/cloud) from its sync client.
 
 rmscene (https://github.com/ricklupton/rmscene), MIT license,
 Copyright (c) 2023 Rick Lupton

@@ -11,6 +11,7 @@
 //! The library does no I/O. It is published for Rust (crates.io), JavaScript
 //! (npm, WebAssembly) and Python (PyPI).
 
+pub mod cloud;
 pub mod geometry;
 mod js;
 pub mod page;

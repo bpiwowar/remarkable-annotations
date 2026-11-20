@@ -1,6 +1,8 @@
 //! Python bindings (`remarkable_annotations` on PyPI), built by maturin with
 //! the `extension-module` feature.
 
+mod cloud;
+
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -35,6 +37,7 @@ impl PyScene {
 #[pymodule]
 fn remarkable_annotations(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyScene>()?;
+    cloud::register(m)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }

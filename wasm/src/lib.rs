@@ -5,6 +5,8 @@
 //! Rust field names in camelCase; byte arrays are `Uint8Array`s. Ids are
 //! `{ author, counter }`.
 
+mod cloud;
+
 use remarkable_annotations::{geometry, page, scene, shapes};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;

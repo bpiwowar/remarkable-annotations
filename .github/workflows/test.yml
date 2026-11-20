@@ -69,3 +69,24 @@ jobs:
     - working-directory: tests/reference
       run: npm ci && npm run dump
     - run: git diff --exit-code tests/fixtures
+
+  cloud:
+    # The cloud client against rmapi-js, on fake clouds
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v5
+    - uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: wasm
+        save-if: false
+    # rmapi-js needs Uint8Array.prototype.toHex (Node >= 25)
+    - uses: actions/setup-node@v5
+      with:
+        node-version: '26'
+    - uses: taiki-e/install-action@v2
+      with:
+        tool: wasm-pack@0.15.1
+    - name: Build the WebAssembly bindings for Node
+      run: wasm-pack build --dev --target nodejs --out-dir "$RUNNER_TEMP/pkg" wasm
+    - working-directory: tests/reference
+      run: npm ci && node cloud-check.mjs "$RUNNER_TEMP/pkg"

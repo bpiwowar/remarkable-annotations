@@ -15,11 +15,18 @@ The library does no I/O: it works on bytes, so it runs the same in a browser,
 in privileged Firefox code (a Zotero plugin), in Node and in Python.
 
 **Status:** early. Done: `.rm` v6 scenes, page annotations (reading,
-rewriting pages), shape detection, coordinates and PDF page sizes. Next: the
-reMarkable cloud sync (sans-I/O). All of it is ported from the TypeScript
+rewriting pages), shape detection, coordinates and PDF page sizes, and a
+reMarkable cloud client (sans-I/O). All of it is ported from the TypeScript
 implementation in
 [zotero-remarkable-sync](https://github.com/bpiwowar/zotero-remarkable-sync),
 and tested against it.
+
+## Used by
+
+- [zotero-remarkable-sync](https://github.com/bpiwowar/zotero-remarkable-sync), a
+  Zotero plugin that syncs annotations between Zotero and a reMarkable tablet. It
+  uses the JavaScript (WebAssembly) package for the `.rm` scenes, the pages and
+  the reMarkable cloud client.
 
 ## Scenes
 
@@ -92,6 +99,51 @@ PDF's vectors within 1 pt. Pen widths use a factor fitted the same way
 walks the PDF's page tree ([`pdf`](src/pdf.rs)), expanding compressed object
 streams and honouring inherited boxes. If that fails, it falls back to a
 plain-text scan of `/MediaBox`, then to US Letter.
+
+## Cloud
+
+[`cloud`](src/cloud) is a reMarkable cloud client that does no I/O: each
+operation hands the host the HTTP requests to make, one at a time, and
+continues with the responses. The host also provides the clock and uuids.
+The same client runs in a browser, in privileged Firefox code, in Node and in
+Python.
+
+```js
+import init, { CloudSession, cloudAuth } from "remarkable-annotations";
+
+async function run(op) {
+  for (let step = op.start(); ; ) {
+    if (step.type === "request") {
+      const r = await fetch(step.url, { method: step.method, headers: step.headers, body: step.body });
+      step = op.resume({ status: r.status, statusText: r.statusText, body: new Uint8Array(await r.arrayBuffer()) });
+    } else if (step.type === "sleep") {
+      await new Promise((ok) => setTimeout(ok, Math.random() * step.ms));
+      step = op.resume();
+    } else if (step.type === "done") return step; // json, bytes or text
+    else throw step.error; // {kind: "generation" | "hashNotFound" | "response" | ..., message}
+  }
+}
+
+const { text: token } = await run(cloudAuth(deviceToken));
+const session = new CloudSession(token);
+const items = JSON.parse((await run(session.listItems(false))).json);
+```
+
+Operations: `listItems`, `listRefs`, `getContent`, `getMetadata`,
+`getEntries`, `getHash`, `putPdf`, `putFolder`, `updateDocument`, `move`,
+`purge`, `putRmPages` (one commit; `hashNotFound` if the document changed),
+and the document helpers `uploadPdf` (with the full page list),
+`ensureFolder`, `fetchAnnotations` and `mapPdfPages`; `cloudRegister` and
+`cloudAuth` for tokens. Generation conflicts and transient errors are retried
+as rmapi-js does.
+
+The protocol is [rmapi-js](https://github.com/erikbrinkman/rmapi-js)'s,
+ported operation by operation. [`cloud-check.mjs`](tests/reference/cloud-check.mjs)
+runs rmapi-js and this client side by side on fake clouds
+([`fakecloud.mjs`](tests/reference/fakecloud.mjs)): accounts on schema 3 and 4,
+reads, writes, errors, transient failures, and other devices writing at the
+same time. Both must return the same results (as JSON text) and leave the same
+cloud, byte for byte.
 
 ## Tests
 
