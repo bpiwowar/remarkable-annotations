@@ -1,0 +1,67 @@
+name: Upload npm package
+
+# Publishes the WebAssembly build (wasm/) to npm as `remarkable-annotations`,
+# from the same GitHub release as the Python packages (release.yml) but
+# independently. Both use the version in [workspace.package] of Cargo.toml.
+#
+# npm trusted publishing (OIDC, no token, provenance generated) with staged
+# publishing: the version goes live once a maintainer approves it on
+# npmjs.com (2FA). On npmjs.com, package `remarkable-annotations` > Settings >
+# Trusted Publisher: GitHub Actions, repository
+# `bpiwowar/remarkable-annotations`, workflow `release-npm.yml`, environment
+# `npm`. A first version must be published by hand before a trusted
+# publisher can be set.
+#
+# workflow_dispatch: dry run (build and pack, nothing is published).
+# "[skip npm]" in the release notes skips this workflow.
+
+on:
+  release:
+    types: [created]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  npm:
+    if: ${{ github.event_name != 'release' || !contains(github.event.release.body, '[skip npm]') }}
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check tag matches the workspace version
+        if: github.event_name == 'release'
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
+          if [ "$tag" != "$version" ]; then
+            echo "::error file=Cargo.toml::Release tag $GITHUB_REF_NAME does not match Cargo.toml version $version."
+            exit 1
+          fi
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: wasm
+          save-if: false
+      # No registry-url: setup-node would then set a placeholder
+      # NODE_AUTH_TOKEN, which breaks OIDC publishing
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+      - name: npm >= 11.15.0 (staged publishing)
+        run: npm install -g 'npm@^11.15.0' && npm --version
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack@0.15.1
+      - name: Build the package
+        run: wasm/build-npm.sh "$GITHUB_WORKSPACE/wasm/pkg"
+      - name: Check the package
+        working-directory: wasm/pkg
+        run: npm publish --dry-run
+      - name: Stage for publication (approve on npmjs.com)
+        if: github.event_name == 'release'
+        working-directory: wasm/pkg
+        run: npm stage publish

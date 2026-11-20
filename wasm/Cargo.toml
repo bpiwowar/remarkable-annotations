@@ -1,0 +1,17 @@
+[package]
+name = "remarkable-annotations-wasm"
+version.workspace = true
+edition = "2021"
+authors = ["Benjamin Piwowarski <benjamin@piwowarski.fr>"]
+license = "MIT OR Apache-2.0"
+description = "WebAssembly bindings (wasm-bindgen) for remarkable-annotations"
+repository = "https://github.com/bpiwowar/remarkable-annotations"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+remarkable-annotations = { path = ".." }
+wasm-bindgen = "0.2"
+serde_json = "1"

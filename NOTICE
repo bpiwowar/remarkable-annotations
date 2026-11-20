@@ -1,0 +1,16 @@
+remarkable-annotations
+Copyright (c) 2026 Benjamin Piwowarski
+Licensed under either of the MIT license (LICENSE-MIT) or the Apache License,
+Version 2.0 (LICENSE-APACHE), at your option.
+
+This product includes software derived from the following projects:
+
+rmapi-js (https://github.com/erikbrinkman/rmapi-js), MIT license,
+Copyright (c) 2024 Erik Brinkman
+  The .rm v6 scene parser and serializer (src/scene) are ported from its
+  `rm6` module.
+
+rmscene (https://github.com/ricklupton/rmscene), MIT license,
+Copyright (c) 2023 Rick Lupton
+  The test files in tests/fixtures/rm/rmscene come from its test data; its
+  license is in that folder.

@@ -1,0 +1,38 @@
+[build-system]
+requires = ["maturin>=1.9,<2.0"]
+build-backend = "maturin"
+
+[tool.maturin]
+features = ["extension-module"]
+
+[project]
+name = "remarkable-annotations"
+requires-python = ">=3.10"
+dynamic = ["version"]
+description = "Read and write reMarkable annotations (.rm v6 scenes): strokes and highlights on PDF pages"
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+]
+authors = [
+    {"email" = "benjamin@piwowarski.fr", name = "Benjamin Piwowarski"}
+]
+readme = "README.md"
+license = "MIT OR Apache-2.0"
+license-files = ["LICENSE-MIT", "LICENSE-APACHE", "NOTICE"]
+
+[dependency-groups]
+dev = ["maturin>=1.9,<2.0", "pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["python"]
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "C90", "T20"]
+ignore = ["E501"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 25

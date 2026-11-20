@@ -1,0 +1,12 @@
+{
+  "name": "remarkable-annotations-reference",
+  "private": true,
+  "type": "module",
+  "description": "Dumps rmapi-js's parse of the fixtures, the reference for tests/scene.rs",
+  "scripts": {
+    "dump": "node dump.mjs"
+  },
+  "devDependencies": {
+    "rmapi-js": "14.4.2"
+  }
+}

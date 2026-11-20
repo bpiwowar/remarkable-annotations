@@ -1,0 +1,42 @@
+[package]
+name = "remarkable-annotations"
+version.workspace = true
+edition = "2021"
+authors = ["Benjamin Piwowarski <benjamin@piwowarski.fr>"]
+license = "MIT OR Apache-2.0"
+description = "Read and write reMarkable annotations (.rm v6 scenes): strokes and highlights on PDF pages"
+repository = "https://github.com/bpiwowar/remarkable-annotations"
+
+[workspace]
+members = [".", "wasm"]
+default-members = ["."]
+
+# Single version for the crate, the Python package (PyPI) and the npm package
+# (wasm/, published as `remarkable-annotations`): bump it here only.
+[workspace.package]
+version = "0.1.0"
+
+[lib]
+name = "remarkable_annotations"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+# Python bindings (src/py)
+python = ["dep:pyo3"]
+# One wheel per platform for every Python >= 3.10 (stable ABI)
+extension-module = ["python", "pyo3/extension-module", "pyo3/abi3-py310"]
+
+[dependencies]
+pyo3 = { version = "0.28", optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[profile.release]
+lto = true
+codegen-units = 1
+
+[dev-dependencies]
+# exact float parsing, to compare with the JSON written by rmapi-js
+serde_json = { version = "1", features = ["float_roundtrip"] }
