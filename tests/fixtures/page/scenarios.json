@@ -1,0 +1,57 @@
+[
+  {
+    "name": "blank_items",
+    "base": { "blank": 1 },
+    "highlights": [
+      { "text": "some text", "colorIndex": 3, "rects": [{ "x": -100, "y": 50, "w": 200, "h": 30 }] },
+      { "text": "naïve café — ✓ 𝄞", "colorIndex": 14, "rgba": [255, 237, 117, 255], "rects": [{ "x": -90.25, "y": 85.5, "w": 120.5, "h": 30 }, { "x": 1, "y": 2, "w": 3, "h": 4 }] }
+    ],
+    "strokes": [
+      { "tool": 17, "colorIndex": 0, "thickness": 2, "pointWidth": 16, "isHighlighter": false, "points": [{ "x": 0, "y": 0 }, { "x": 10.123456789, "y": -3.25 }] },
+      { "tool": 18, "colorIndex": 9, "rgba": [1, 2, 3, 4], "thickness": 0, "pointWidth": 0, "isHighlighter": true, "points": [{ "x": -50, "y": -50 }] },
+      { "tool": 15, "colorIndex": 6, "thickness": 1.5, "pointWidth": 2.5, "isHighlighter": false, "points": [{ "x": 1e6, "y": -1e-7 }] }
+    ]
+  },
+  {
+    "name": "blank_authors",
+    "base": { "blank": 2 },
+    "strokes": [
+      { "tool": 17, "colorIndex": 7, "thickness": 2, "pointWidth": 16, "isHighlighter": false, "points": [{ "x": 1, "y": 1 }] },
+      { "tool": 17, "colorIndex": 7, "thickness": 2, "pointWidth": 16, "isHighlighter": false, "points": [{ "x": 2, "y": 2 }] }
+    ],
+    "highlights": [{ "text": "x", "colorIndex": 4, "rects": [{ "x": 0, "y": 0, "w": 1, "h": 1 }] }],
+    "update": {
+      "authors": [5, 6],
+      "register": [[5, "00000000-0000-4000-8000-000000000005"], [6, "00000000-0000-4000-8000-000000000006"], [2, "00000000-0000-4000-8000-000000000002"]]
+    }
+  },
+  {
+    "name": "lines_append",
+    "base": "rmscene/Normal_A_stroke_2_layers.rm",
+    "strokes": [{ "tool": 17, "colorIndex": 7, "thickness": 2, "pointWidth": 16, "isHighlighter": false, "points": [{ "x": 10, "y": 10 }, { "x": 20, "y": 5 }] }],
+    "highlights": [{ "text": "hello", "colorIndex": 5, "rects": [{ "x": -100, "y": 50, "w": 200, "h": 30 }] }]
+  },
+  {
+    "name": "lines_remove_first",
+    "base": "rmscene/Normal_A_stroke_2_layers.rm",
+    "removeFirst": true
+  },
+  {
+    "name": "highlight_replace",
+    "base": "rmscene/Wikipedia_highlighted_p1.rm",
+    "removeFirst": true,
+    "highlights": [{ "text": "replaced", "colorIndex": 6, "rects": [{ "x": 0, "y": 0, "w": 10, "h": 10 }] }],
+    "update": { "register": [[9, "00000000-0000-4000-8000-000000000009"]], "authors": [9] }
+  },
+  {
+    "name": "colors_append",
+    "base": "rmscene/Color_and_tool_v3.14.4.rm",
+    "strokes": [{ "tool": 23, "colorIndex": 9, "rgba": [255, 0, 0, 128], "thickness": 2, "pointWidth": 33, "isHighlighter": false, "points": [{ "x": 3, "y": 4 }] }]
+  },
+  {
+    "name": "text_page_append",
+    "base": "rmscene/Bold_Heading_Bullet_Normal.rm",
+    "update": { "layerId": { "author": 0, "counter": 11 }, "author": 2, "startCounter": 100 },
+    "strokes": [{ "tool": 17, "colorIndex": 0, "thickness": 2, "pointWidth": 16, "isHighlighter": false, "points": [{ "x": 0, "y": 0 }] }]
+  }
+]

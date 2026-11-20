@@ -14,11 +14,12 @@ One Rust library, published for three languages:
 The library does no I/O: it works on bytes, so it runs the same in a browser,
 in privileged Firefox code (a Zotero plugin), in Node and in Python.
 
-**Status:** early. The `.rm` v6 scene parser and serializer are done; the
-annotation layer (strokes and highlights in PDF coordinates, page
-rewriting) and the reMarkable cloud sync (sans-I/O) are being ported from
-the TypeScript implementation in
-[zotero-remarkable-sync](https://github.com/bpiwowar/zotero-remarkable-sync).
+**Status:** early. Done: `.rm` v6 scenes, page annotations (reading,
+rewriting pages), shape detection, coordinates and PDF page sizes. Next: the
+reMarkable cloud sync (sans-I/O). All of it is ported from the TypeScript
+implementation in
+[zotero-remarkable-sync](https://github.com/bpiwowar/zotero-remarkable-sync),
+and tested against it.
 
 ## Scenes
 
@@ -50,6 +51,13 @@ the TypeScript implementation. For each one, the tests check that:
   (`X.rmapi.json`, written by [`tests/reference/dump.mjs`](tests/reference/dump.mjs));
 - corrupted copies (bytes changed, inserted, removed, truncated) still parse
   and round-trip, without panics.
+
+The page, geometry, shape and PDF modules are compared with the TypeScript
+implementation: [`page-dump.mjs`](tests/reference/page-dump.mjs) and
+[`geometry-dump.mjs`](tests/reference/geometry-dump.mjs) record its results
+(annotations of every fixture, rebuilt pages byte for byte, shapes, coordinate
+conversions, page sizes of the PDFs in [`tests/fixtures/pdf`](tests/fixtures/pdf),
+made by [`gen-pdfs.py`](tests/reference/gen-pdfs.py)).
 
 ## License
 

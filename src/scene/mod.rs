@@ -25,7 +25,19 @@ pub const V6_HEADER: &str = "reMarkable .lines file, version=6";
 pub const HEADER_LENGTH: usize = 43;
 
 /// A CRDT identifier: `(author, counter)`, unique across replicas.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct CrdtId {
     /// The author (replica) that minted the id; the page's author table maps
     /// it to a uuid.
@@ -133,7 +145,7 @@ pub struct Line {
 }
 
 /// An axis-aligned rectangle.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Rect {
     pub x: f64,
     pub y: f64,
