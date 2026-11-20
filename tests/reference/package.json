@@ -6,6 +6,9 @@
   "scripts": {
     "dump": "node dump.mjs"
   },
+  "engines": {
+    "node": ">=25"
+  },
   "devDependencies": {
     "rmapi-js": "14.4.2"
   }

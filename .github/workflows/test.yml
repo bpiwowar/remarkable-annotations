@@ -61,9 +61,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v5
+    # rmapi-js uses Uint8Array.prototype.toHex (Node >= 25): on older Node it
+    # leaves author tables unparsed
     - uses: actions/setup-node@v5
       with:
-        node-version: '22'
+        node-version: '26'
     - working-directory: tests/reference
       run: npm ci && npm run dump
     - run: git diff --exit-code tests/fixtures
