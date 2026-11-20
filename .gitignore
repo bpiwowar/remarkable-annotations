@@ -10,3 +10,4 @@ node_modules/
 
 # npm package built by wasm/build-npm.sh
 /wasm/pkg/
+.codegraph/
