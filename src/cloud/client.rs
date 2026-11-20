@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 use super::error::CloudError;
-use super::exec::{Io, Operation, Output, Request, Response};
+use super::exec::{join2, join_all, Io, Operation, Output, Request, Response};
 use super::js::{
     base64, base64url_decode, crc32c, from_hex, locale_compare, num, number_to_string, parse,
     sha256_hex, stringify,
@@ -382,6 +382,11 @@ impl Ctx {
     }
 
     /// `raw.putFile`: uploads a file unless its hash is known.
+    /// [`Self::put_file`] owning its name (for futures built in a closure).
+    async fn put_file_owned(&self, file_name: String, bytes: Vec<u8>) -> Result<RawEntry> {
+        self.put_file(&file_name, bytes).await
+    }
+
     async fn put_file(&self, file_name: &str, bytes: Vec<u8>) -> Result<RawEntry> {
         let hash = sha256_hex(&bytes);
         self.put_hashed(file_name, &hash, &bytes).await?;
@@ -595,13 +600,19 @@ impl Ctx {
             .ok_or_else(|| {
                 CloudError::other(format!("couldn't find metadata for hash {}", r.hash))
             })?;
-        let meta = self
-            .get_json(meta_entry, schema::metadata(), "metadata")
-            .await?;
-        let content = match entries.iter().find(|e| e.id.ends_with(".content")) {
-            Some(e) => self.get_json(e, schema::content(), "content").await?,
-            None => json!({}),
-        };
+        // Metadata and content at once, as rmapi-js (Promise.all).
+        let content_entry = entries.iter().find(|e| e.id.ends_with(".content"));
+        let (meta, content) = join2(
+            self.get_json(meta_entry, schema::metadata(), "metadata"),
+            async {
+                match content_entry {
+                    Some(e) => self.get_json(e, schema::content(), "content").await,
+                    None => Ok(json!({})),
+                }
+            },
+        )
+        .await;
+        let (meta, content) = (meta?, content?);
         let mut out = Map::new();
         let mut put = |k: &str, v: Option<&Value>| {
             if let Some(v) = v {
@@ -786,10 +797,11 @@ impl Session {
     pub fn list_items(&self, refresh: bool) -> Operation {
         self.op(move |c| async move {
             let refs = c.list_refs(refresh).await?;
-            let mut items = Vec::new();
-            for r in &refs {
-                items.push(c.convert_entry(r).await?);
-            }
+            // All entries at once, as rmapi-js (Promise.all).
+            let items = join_all(refs.iter().map(|r| c.convert_entry(r)).collect())
+                .await
+                .into_iter()
+                .collect::<Result<Vec<_>>>()?;
             Ok(Output::Json(Value::Array(items)))
         })
     }
@@ -1175,8 +1187,8 @@ impl Ctx {
         })
     }
 
-    /// `updateDocument`: the content edit, then the type check (rmapi-js runs
-    /// both at once).
+    /// `updateDocument`: the content edit and the type check, at once (as
+    /// rmapi-js's `#editContent`).
     async fn update_document(
         &self,
         r: &ItemRef,
@@ -1186,8 +1198,12 @@ impl Ctx {
         self.edit_entry(r, refresh, |item, schema| {
             let (c, update) = (self.clone(), update.clone());
             async move {
-                let new_entry = c.edit_content_raw(&item, &update, schema).await?;
-                let meta = c.get_metadata(&item).await?;
+                let (new_entry, meta) = join2(
+                    c.edit_content_raw(&item, &update, schema),
+                    c.get_metadata(&item),
+                )
+                .await;
+                let (new_entry, meta) = (new_entry?, meta?);
                 if meta["type"] != "DocumentType" {
                     return Err(CloudError::other(format!(
                         "expected type DocumentType but got {} for hash {}",
@@ -1223,9 +1239,18 @@ impl Ctx {
                 )));
             }
         }
-        for (page_id, bytes) in pages {
-            let name = format!("{}/{page_id}.rm", item.id);
-            let entry = self.put_file(&name, bytes.clone()).await?;
+        // All pages at once, as rmapi-js (Promise.all); entries in page order.
+        let written = join_all(
+            pages
+                .iter()
+                .map(|(page_id, bytes)| {
+                    self.put_file_owned(format!("{}/{page_id}.rm", item.id), bytes.clone())
+                })
+                .collect(),
+        )
+        .await;
+        for entry in written {
+            let entry = entry?;
             match entries.iter().position(|e| e.id == entry.id) {
                 Some(j) => entries[j] = entry,
                 None => entries.push(entry),
@@ -1236,8 +1261,9 @@ impl Ctx {
 
     /// rmdoc.ts's `readDoc`.
     async fn read_doc(&self, r: &ItemRef) -> Result<Doc> {
-        let entries = self.get_entries(&r.id, &r.hash).await?.entries;
-        let content = self.get_content(r).await.ok();
+        // Index and content at once, as rmdoc.ts (Promise.all).
+        let (entries, content) = join2(self.get_entries(&r.id, &r.hash), self.get_content(r)).await;
+        let (entries, content) = (entries?.entries, content.ok());
         let mut rm_by_page = HashMap::new();
         for e in entries {
             if let Some(stem) = e.id.strip_suffix(".rm") {

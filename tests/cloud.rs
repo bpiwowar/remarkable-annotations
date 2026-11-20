@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 
 use remarkable_annotations::cloud::{
-    CloudError, ItemRef, Output, Request, Response, Session, SessionOptions, Step,
+    CloudError, ItemRef, Operation, Output, Request, Response, Session, SessionOptions, Step, Wait,
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -238,6 +238,7 @@ fn retries_conflicts_and_transient_errors() {
                 sleeps.push(ms);
                 op.resume(None)
             }
+            Step::Batch(_) => panic!("a folder creation has no concurrent requests"),
             Step::Done(o) => break Ok(o),
             Step::Failed(e) => break Err(e),
         }
@@ -272,4 +273,155 @@ fn errors() {
     ));
     assert!(Session::new("not-a-jwt", SessionOptions::default()).is_err());
     assert_eq!(session().device_id(), "dev");
+}
+
+/// A schema 4 cloud with `n` folders.
+fn cloud_with(n: usize) -> Fake {
+    let mut f = Fake::new(4, "4\n0:.:0:0\n");
+    let mut root = format!("4\n0:.:{n}:0\n");
+    for i in 0..n {
+        let content = f.put(br#"{"tags":[]}"#.to_vec());
+        let meta = f.put(
+            format!(
+                r#"{{"visibleName":"F{i}","type":"CollectionType","parent":"","pinned":false}}"#
+            )
+            .into_bytes(),
+        );
+        let id = format!("10000000-0000-4000-8000-{i:012}");
+        let index =
+            format!("4\n0:{id}:2:0\n{content}:0:{id}.content:0:0\n{meta}:0:{id}.metadata:0:0\n");
+        let h = f.put(index.into_bytes());
+        root.push_str(&format!("{h}:0:{id}:2:0\n"));
+    }
+    f.root = f.put(root.into_bytes());
+    f
+}
+
+/// Drives an operation, answering every request of a batch (in order) and
+/// counting the round trips (steps that wait on the host).
+fn drive(mut op: Operation, f: &mut Fake) -> (Result<Output, CloudError>, usize, usize) {
+    let (mut trips, mut widest) = (0, 0);
+    let mut step = op.start();
+    loop {
+        step = match step {
+            Step::Request(r) => {
+                trips += 1;
+                widest = widest.max(1);
+                let resp = f.send(&r);
+                op.resume(Some(resp))
+            }
+            Step::Sleep { .. } => {
+                trips += 1;
+                op.resume(None)
+            }
+            Step::Batch(waits) => {
+                trips += 1;
+                widest = widest.max(waits.len());
+                let outcomes = waits
+                    .iter()
+                    .map(|w| match w {
+                        Wait::Request(r) => Some(f.send(r)),
+                        Wait::Sleep { .. } => None,
+                    })
+                    .collect();
+                op.resume_batch(outcomes)
+            }
+            Step::Done(o) => return (Ok(o), trips, widest),
+            Step::Failed(e) => return (Err(e), trips, widest),
+        }
+    }
+}
+
+/// Listing runs the documents concurrently, as rmapi-js: a constant number
+/// of round trips, not one or more per document.
+#[test]
+fn listing_is_concurrent() {
+    let mut f = cloud_with(50);
+    let (result, trips, widest) = drive(session().list_items(true), &mut f);
+    let items = json_of(result.unwrap());
+    assert_eq!(items.as_array().unwrap().len(), 50);
+    assert_eq!(items[7]["visibleName"], "F7");
+    // root, root index, the 50 indexes, then the 100 metadata and contents
+    assert_eq!(trips, 4, "round trips");
+    assert_eq!(widest, 100);
+    assert_eq!(f.log.len(), 2 + 50 + 100);
+    // A second listing reads the root again; the rest is cached.
+    let s = session();
+    drive(s.list_items(true), &mut f).0.unwrap();
+    let before = f.log.len();
+    let (again, trips, _) = drive(s.list_items(true), &mut f);
+    assert_eq!(json_of(again.unwrap()), items);
+    assert_eq!((f.log.len() - before, trips), (1, 1));
+}
+
+/// Concurrent requests retry on their own: failures inside a batch give
+/// sleeps and new requests in the next batches, and the same result.
+#[test]
+fn concurrent_requests_retry() {
+    let mut reference = cloud_with(5);
+    let expected = json_of(
+        session()
+            .list_items(true)
+            .run(|r| reference.send(r))
+            .unwrap(),
+    );
+    let mut f = cloud_with(5);
+    // The 3rd, 4th and 6th requests fail with a transient error.
+    let mut n = 0;
+    let mut failing = |f: &mut Fake, r: &Request| {
+        n += 1;
+        if [3, 4, 6].contains(&n) {
+            f.log.push(r.clone());
+            Response {
+                status: 503,
+                body: b"busy".to_vec(),
+                ..Default::default()
+            }
+        } else {
+            f.send(r)
+        }
+    };
+    let mut op = session().list_items(true);
+    let mut step = op.start();
+    let mut saw_sleep_in_batch = false;
+    let result = loop {
+        step = match step {
+            Step::Request(r) => {
+                let resp = failing(&mut f, &r);
+                op.resume(Some(resp))
+            }
+            Step::Sleep { .. } => op.resume(None),
+            Step::Batch(waits) => {
+                saw_sleep_in_batch |= waits.iter().any(|w| matches!(w, Wait::Sleep { .. }));
+                let outcomes = waits
+                    .iter()
+                    .map(|w| match w {
+                        Wait::Request(r) => Some(failing(&mut f, r)),
+                        Wait::Sleep { .. } => None,
+                    })
+                    .collect();
+                op.resume_batch(outcomes)
+            }
+            Step::Done(o) => break Ok(o),
+            Step::Failed(e) => break Err(e),
+        }
+    };
+    assert_eq!(json_of(result.unwrap()), expected);
+    assert!(
+        saw_sleep_in_batch,
+        "retries of concurrent requests are batched"
+    );
+}
+
+/// A document that cannot be read fails the listing (as Promise.all).
+#[test]
+fn concurrent_errors() {
+    let mut f = cloud_with(3);
+    let broken = sha(br#"{"visibleName":"F1","type":"CollectionType","parent":"","pinned":false}"#);
+    f.files.remove(&broken);
+    let (result, ..) = drive(session().list_items(true), &mut f);
+    assert!(
+        matches!(result, Err(CloudError::Response { status: 404, .. })),
+        "{result:?}"
+    );
 }

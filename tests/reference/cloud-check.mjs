@@ -172,21 +172,41 @@ const PAGES = { RM_NEW, RM_A2 };
 const rm6 = await import(new URL("rm6.js", import.meta.resolve("rmapi-js")).href);
 const rmapi_parse = (name) => rm6.parseRmScene(PAGES[name]);
 
-/** the Rust client, driven by a host loop */
+// Batch items complete in a shuffled order (seeded), as concurrent requests
+// would; outcomes still go back in item order.
+let jitterSeed = 7;
+const jitter = () => ((jitterSeed = (jitterSeed * 1103515245 + 12345) % 2147483648) % 3);
+const tick = (n) => new Promise((ok) => setTimeout(ok, n));
+
+/** one request (or sleep) of the Rust client, on the fake cloud */
+async function perform(cloud, item) {
+  if (item.type === "sleep") return undefined;
+  try {
+    const r = await cloud.fetch(item.url, { method: item.method, headers: item.headers, body: item.body });
+    return { status: r.status, statusText: r.statusText, body: new Uint8Array(await r.arrayBuffer()) };
+  } catch (e) {
+    return { networkError: String(e) };
+  }
+}
+
+/** the Rust client, driven by a host loop; counts round trips */
+export const trips = { count: 0, widest: 0 };
 async function drive(cloud, o) {
   let step = o.start();
   for (;;) {
-    if (step.type === "request") {
-      let resp;
-      try {
-        const r = await cloud.fetch(step.url, { method: step.method, headers: step.headers, body: step.body });
-        resp = { status: r.status, statusText: r.statusText, body: new Uint8Array(await r.arrayBuffer()) };
-      } catch (e) {
-        resp = { networkError: String(e) };
-      }
-      step = o.resume(resp);
-    } else if (step.type === "sleep") {
-      step = o.resume();
+    if (step.type === "request" || step.type === "sleep") {
+      trips.count++;
+      step = o.resume(await perform(cloud, step));
+    } else if (step.type === "batch") {
+      trips.count++;
+      trips.widest = Math.max(trips.widest, step.items.length);
+      const outcomes = await Promise.all(
+        step.items.map(async (item) => {
+          await tick(jitter());
+          return perform(cloud, item);
+        }),
+      );
+      step = o.resumeBatch(outcomes);
     } else if (step.type === "done") {
       if (step.json !== undefined) return { json: step.json };
       if (step.bytes !== undefined) return step.bytes;
@@ -441,5 +461,27 @@ console.log("register/auth: OK");
 for (const sc of SCENARIOS) {
   const stats = await scenario(sc);
   console.log(`${sc.name}: OK (${sc.ops.length} ops; requests: rust ${stats.requests}, rmapi-js ${stats.rmapiRequests}; ${stats.puts} uploads, ${stats.rootPuts} root PUTs)`);
+}
+
+// Round trips: listing runs the documents concurrently (as rmapi-js's
+// Promise.all), so it waits on the host a constant number of times.
+{
+  const cloud = new FakeCloud(4);
+  for (let i = 0; i < 50; i++) {
+    const id = `40000000-0000-4000-8000-${String(i).padStart(12, "0")}`;
+    cloud.addItem(id, folder(id, `F${i}`, ""));
+  }
+  globalThis.fetch = cloud.fetch;
+  const options = { rawHost: RAW_HOST, uploadHost: UPLOAD_HOST };
+  const s = new wasm.CloudSession(sessionToken("device-1"), JSON.stringify(options));
+  trips.count = 0;
+  trips.widest = 0;
+  const { json: listed } = await drive(cloud, s.listItems(true));
+  assert.equal(JSON.parse(listed).length, 50);
+  assert.equal(trips.count, 4, "round trips to list 50 documents");
+  assert.equal(trips.widest, 100, "requests in the widest batch");
+  const rmapiList = await rmapi.session(sessionToken("device-1"), options).listItems(true);
+  assert.equal(listed, JSON.stringify(rmapiList), "same listing as rmapi-js");
+  console.log(`listing 50 documents: OK (${trips.count} round trips, up to ${trips.widest} requests at once)`);
 }
 clearInterval(keepAlive);

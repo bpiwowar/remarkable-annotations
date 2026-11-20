@@ -2,7 +2,8 @@
 //! I/O, it stops and hands the host a [`Step`]; the host performs it and
 //! resumes the operation with the outcome.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::rc::Rc;
@@ -53,6 +54,16 @@ pub enum Output {
     None,
 }
 
+/// One thing an operation waits for.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Wait {
+    /// Perform this request.
+    Request(Request),
+    /// Wait (backoff before a retry). rmapi-js waits a random time below
+    /// `ms` (full jitter).
+    Sleep { ms: f64 },
+}
+
 /// What the operation needs next.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Step {
@@ -63,85 +74,133 @@ pub enum Step {
     Sleep {
         ms: f64,
     },
+    /// Several independent requests or waits, which the host may run
+    /// concurrently; then call [`Operation::resume_batch`] with one outcome
+    /// per item, in order (`None` for a sleep).
+    Batch(Vec<Wait>),
     Done(Output),
     Failed(CloudError),
 }
 
-#[derive(Default)]
-enum Slot {
-    #[default]
-    Empty,
-    Request(Request),
-    Sleep(f64),
+enum Completion {
     Response(Response),
     Woken,
 }
 
-/// The channel between the operation's futures and the host.
+/// The channel between the operation's futures and the host: what they wait
+/// for, and what the host gave back, by wait id.
 #[derive(Default)]
 pub(crate) struct Io {
-    slot: RefCell<Slot>,
+    next_id: Cell<u64>,
+    queued: RefCell<Vec<(u64, Wait)>>,
+    done: RefCell<HashMap<u64, Completion>>,
 }
 
-pub(crate) struct Fetch {
+/// A request or a sleep, as a future.
+pub(crate) struct Waiting {
     io: Rc<Io>,
-    request: Option<Request>,
+    id: u64,
+    wait: Option<Wait>,
 }
 
-impl Future for Fetch {
-    type Output = Response;
+impl Future for Waiting {
+    type Output = Option<Response>;
 
-    fn poll(mut self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Response> {
-        if let Some(r) = self.request.take() {
-            *self.io.slot.borrow_mut() = Slot::Request(r);
+    fn poll(mut self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<Response>> {
+        if let Some(w) = self.wait.take() {
+            self.io.queued.borrow_mut().push((self.id, w));
             return Poll::Pending;
         }
-        match std::mem::take(&mut *self.io.slot.borrow_mut()) {
-            Slot::Response(r) => Poll::Ready(r),
-            other => {
-                *self.io.slot.borrow_mut() = other;
-                Poll::Pending
-            }
-        }
-    }
-}
-
-pub(crate) struct Sleep {
-    io: Rc<Io>,
-    ms: Option<f64>,
-}
-
-impl Future for Sleep {
-    type Output = ();
-
-    fn poll(mut self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<()> {
-        if let Some(ms) = self.ms.take() {
-            *self.io.slot.borrow_mut() = Slot::Sleep(ms);
-            return Poll::Pending;
-        }
-        match std::mem::take(&mut *self.io.slot.borrow_mut()) {
-            Slot::Woken => Poll::Ready(()),
-            other => {
-                *self.io.slot.borrow_mut() = other;
-                Poll::Pending
-            }
+        match self.io.done.borrow_mut().remove(&self.id) {
+            Some(Completion::Response(r)) => Poll::Ready(Some(r)),
+            Some(Completion::Woken) => Poll::Ready(None),
+            None => Poll::Pending,
         }
     }
 }
 
 impl Io {
-    pub(crate) fn fetch(self: &Rc<Self>, request: Request) -> Fetch {
-        Fetch {
+    fn wait(self: &Rc<Self>, wait: Wait) -> Waiting {
+        let id = self.next_id.get();
+        self.next_id.set(id + 1);
+        Waiting {
             io: self.clone(),
-            request: Some(request),
+            id,
+            wait: Some(wait),
         }
     }
 
-    pub(crate) fn sleep(self: &Rc<Self>, ms: f64) -> Sleep {
-        Sleep {
-            io: self.clone(),
-            ms: Some(ms),
+    /// A request; the future owns what it needs (no borrow of `self`).
+    pub(crate) fn fetch(
+        self: &Rc<Self>,
+        request: Request,
+    ) -> impl Future<Output = Response> + 'static {
+        let w = self.wait(Wait::Request(request));
+        async move { w.await.unwrap_or_default() }
+    }
+
+    /// A sleep of up to `ms` (the host applies the jitter).
+    pub(crate) fn sleep(self: &Rc<Self>, ms: f64) -> impl Future<Output = ()> + 'static {
+        let w = self.wait(Wait::Sleep { ms });
+        async move {
+            w.await;
         }
+    }
+}
+
+/// Runs futures concurrently (their requests go to the host together) and
+/// gives their outputs in order, like `Promise.all` once all have settled.
+pub(crate) async fn join_all<F: Future>(futures: Vec<F>) -> Vec<F::Output> {
+    struct JoinAll<F: Future> {
+        futures: Vec<Option<Pin<Box<F>>>>,
+        out: Vec<Option<F::Output>>,
+    }
+    // The futures are boxed and the outputs never pinned: moving the
+    // struct is fine.
+    impl<F: Future> Unpin for JoinAll<F> {}
+    impl<F: Future> Future for JoinAll<F> {
+        type Output = Vec<F::Output>;
+        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            let this = self.get_mut();
+            for (slot, out) in this.futures.iter_mut().zip(this.out.iter_mut()) {
+                if let Some(f) = slot {
+                    if let Poll::Ready(v) = f.as_mut().poll(cx) {
+                        *out = Some(v);
+                        *slot = None;
+                    }
+                }
+            }
+            if this.futures.iter().all(Option::is_none) {
+                Poll::Ready(this.out.iter_mut().map(|o| o.take().unwrap()).collect())
+            } else {
+                Poll::Pending
+            }
+        }
+    }
+    let n = futures.len();
+    JoinAll {
+        futures: futures.into_iter().map(|f| Some(Box::pin(f))).collect(),
+        out: (0..n).map(|_| None).collect(),
+    }
+    .await
+}
+
+/// Runs two futures concurrently, like `Promise.all([a, b])` once both have
+/// settled.
+pub(crate) async fn join2<A: Future, B: Future>(a: A, b: B) -> (A::Output, B::Output) {
+    enum Either<X, Y> {
+        A(X),
+        B(Y),
+    }
+    type Boxed<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
+    let futures: Vec<Boxed<'_, Either<A::Output, B::Output>>> = vec![
+        Box::pin(async move { Either::A(a.await) }),
+        Box::pin(async move { Either::B(b.await) }),
+    ];
+    let mut out = join_all(futures).await.into_iter();
+    match (out.next(), out.next()) {
+        (Some(Either::A(x)), Some(Either::B(y))) => (x, y),
+        _ => unreachable!(),
     }
 }
 
@@ -151,6 +210,8 @@ type Task = Pin<Box<dyn Future<Output = Result<Output, CloudError>>>>;
 pub struct Operation {
     io: Rc<Io>,
     task: Option<Task>,
+    /// The waits handed to the host, awaiting their outcome.
+    waiting: Vec<u64>,
 }
 
 fn noop_waker() -> Waker {
@@ -172,6 +233,7 @@ impl Operation {
         Self {
             io,
             task: Some(Box::pin(task)),
+            waiting: Vec::new(),
         }
     }
 
@@ -193,14 +255,22 @@ impl Operation {
                     Err(e) => Step::Failed(e),
                 }
             }
-            Poll::Pending => match std::mem::take(&mut *self.io.slot.borrow_mut()) {
-                Slot::Request(r) => Step::Request(r),
-                Slot::Sleep(ms) => Step::Sleep { ms },
-                _ => {
-                    self.task = None;
-                    Step::Failed(CloudError::other("operation stalled"))
+            Poll::Pending => {
+                let queued = std::mem::take(&mut *self.io.queued.borrow_mut());
+                self.waiting = queued.iter().map(|(id, _)| *id).collect();
+                let mut waits: Vec<Wait> = queued.into_iter().map(|(_, w)| w).collect();
+                match waits.len() {
+                    0 => {
+                        self.task = None;
+                        Step::Failed(CloudError::other("operation stalled"))
+                    }
+                    1 => match waits.pop().unwrap() {
+                        Wait::Request(r) => Step::Request(r),
+                        Wait::Sleep { ms } => Step::Sleep { ms },
+                    },
+                    _ => Step::Batch(waits),
                 }
-            },
+            }
         }
     }
 
@@ -211,10 +281,32 @@ impl Operation {
 
     /// Resumes after a request (with its response) or a sleep (with `None`).
     pub fn resume(&mut self, response: Option<Response>) -> Step {
-        *self.io.slot.borrow_mut() = match response {
-            Some(r) => Slot::Response(r),
-            None => Slot::Woken,
-        };
+        self.resume_batch(vec![response])
+    }
+
+    /// Resumes after a batch: one outcome per item, in order (`None` for a
+    /// sleep).
+    pub fn resume_batch(&mut self, responses: Vec<Option<Response>>) -> Step {
+        let ids = std::mem::take(&mut self.waiting);
+        if ids.len() != responses.len() {
+            self.task = None;
+            return Step::Failed(CloudError::other(format!(
+                "expected {} outcome(s), got {}",
+                ids.len(),
+                responses.len()
+            )));
+        }
+        let mut done = self.io.done.borrow_mut();
+        for (id, r) in ids.into_iter().zip(responses) {
+            done.insert(
+                id,
+                match r {
+                    Some(r) => Completion::Response(r),
+                    None => Completion::Woken,
+                },
+            );
+        }
+        drop(done);
         self.poll()
     }
 
@@ -228,9 +320,125 @@ impl Operation {
                     self.resume(Some(resp))
                 }
                 Step::Sleep { .. } => self.resume(None),
+                Step::Batch(waits) => {
+                    let outcomes = waits
+                        .iter()
+                        .map(|w| match w {
+                            Wait::Request(r) => Some(send(r)),
+                            Wait::Sleep { .. } => None,
+                        })
+                        .collect();
+                    self.resume_batch(outcomes)
+                }
                 Step::Done(out) => return Ok(out),
                 Step::Failed(e) => return Err(e),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn get(url: &str) -> Request {
+        Request {
+            method: "GET".into(),
+            url: url.into(),
+            headers: vec![],
+            body: None,
+        }
+    }
+
+    fn answer(body: &str) -> Option<Response> {
+        Some(Response {
+            status: 200,
+            body: body.as_bytes().to_vec(),
+            ..Default::default()
+        })
+    }
+
+    fn text(r: Response) -> String {
+        String::from_utf8(r.body).unwrap()
+    }
+
+    /// Outcomes go to the future that asked, whatever the order.
+    #[test]
+    fn join_all_batches_and_orders() {
+        let io = Rc::new(Io::default());
+        let (a, b, c) = (io.fetch(get("a")), io.fetch(get("b")), io.sleep(10.0));
+        let mut op = Operation::new(io.clone(), async move {
+            let (ab, ()) = join2(join_all(vec![a, b]), c).await;
+            let ab: Vec<String> = ab.into_iter().map(text).collect();
+            Ok(Output::Text(ab.join(",")))
+        });
+        let Step::Batch(waits) = op.start() else {
+            panic!("expected a batch")
+        };
+        assert_eq!(
+            waits,
+            vec![
+                Wait::Request(get("a")),
+                Wait::Request(get("b")),
+                Wait::Sleep { ms: 10.0 }
+            ]
+        );
+        let step = op.resume_batch(vec![answer("A"), answer("B"), None]);
+        assert_eq!(step, Step::Done(Output::Text("A,B".into())));
+    }
+
+    /// A single wait is still a plain request; a batch needs one outcome per
+    /// item.
+    #[test]
+    fn single_waits_and_wrong_counts() {
+        let io = Rc::new(Io::default());
+        let a = io.fetch(get("a"));
+        let mut op = Operation::new(io.clone(), async move { Ok(Output::Text(text(a.await))) });
+        assert_eq!(op.start(), Step::Request(get("a")));
+        assert_eq!(op.resume(answer("x")), Step::Done(Output::Text("x".into())));
+
+        let io = Rc::new(Io::default());
+        let (a, b) = (io.fetch(get("a")), io.fetch(get("b")));
+        let mut op = Operation::new(io.clone(), async move {
+            join_all(vec![a, b]).await;
+            Ok(Output::None)
+        });
+        assert!(matches!(op.start(), Step::Batch(_)));
+        assert!(matches!(op.resume(answer("only one")), Step::Failed(_)));
+    }
+
+    /// Futures that finish at different times: each later wait is its own
+    /// step, and errors come back in order.
+    #[test]
+    fn join_all_staggered_with_errors() {
+        let io = Rc::new(Io::default());
+        let make = |io: &Rc<Io>, url: &'static str, twice: bool| {
+            let io = io.clone();
+            async move {
+                let first = text(io.fetch(get(url)).await);
+                if twice {
+                    let second = text(io.fetch(get(url)).await);
+                    return Err::<String, String>(format!("{first}{second}"));
+                }
+                Ok(first)
+            }
+        };
+        let futures = vec![
+            Box::pin(make(&io, "a", false)) as Pin<Box<dyn Future<Output = _>>>,
+            Box::pin(make(&io, "b", true)),
+        ];
+        let mut op = Operation::new(io.clone(), async move {
+            let out = join_all(futures).await;
+            Ok(Output::Text(format!("{out:?}")))
+        });
+        assert!(matches!(op.start(), Step::Batch(w) if w.len() == 2));
+        assert_eq!(
+            op.resume_batch(vec![answer("1"), answer("2")]),
+            Step::Request(get("b"))
+        );
+        assert_eq!(
+            op.resume(answer("3")),
+            Step::Done(Output::Text(r#"[Ok("1"), Err("23")]"#.into()))
+        );
     }
 }

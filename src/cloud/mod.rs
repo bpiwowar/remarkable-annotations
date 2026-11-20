@@ -3,7 +3,9 @@
 //! Each operation is an [`Operation`]: [`Operation::start`] it, and it
 //! returns a [`Step`]: a [`Request`] for the host to perform (then
 //! [`Operation::resume`] with the [`Response`]), a sleep (backoff before a
-//! retry; resume with `None`), or the result. The host owns the HTTP stack,
+//! retry; resume with `None`), a batch of independent requests and sleeps
+//! the host may run concurrently (where rmapi-js uses `Promise.all`; then
+//! [`Operation::resume_batch`]), or the result. The host owns the HTTP stack,
 //! the clock and the randomness (uuids, backoff jitter), so the same code runs
 //! in a browser, privileged Firefox code, Node and Python.
 //!
@@ -22,7 +24,7 @@ pub use client::{
     RAW_HOST, UPLOAD_HOST,
 };
 pub use error::CloudError;
-pub use exec::{Operation, Output, Request, Response, Step};
+pub use exec::{Operation, Output, Request, Response, Step, Wait};
 
 /// `JSON.stringify` of a result, as rmapi-js would write it.
 pub fn to_js_json(v: &serde_json::Value) -> String {

@@ -1,47 +1,71 @@
 //! Python bindings of the sans-I/O cloud client.
 //!
 //! ```python
+//! def perform(item):
+//!     if item["type"] == "sleep":
+//!         time.sleep(random.random() * item["ms"] / 1000)
+//!         return None
+//!     r = httpx.request(item["method"], item["url"], headers=item["headers"], content=item.get("body"))
+//!     return {"status": r.status_code, "status_text": r.reason_phrase, "body": r.content}
+//!
 //! op = session.list_items(False)
 //! step = op.start()
-//! while step["type"] in ("request", "sleep"):
-//!     if step["type"] == "request":
-//!         r = httpx.request(step["method"], step["url"], headers=step["headers"], content=step.get("body"))
-//!         step = op.resume({"status": r.status_code, "status_text": r.reason_phrase, "body": r.content})
+//! while step["type"] in ("request", "sleep", "batch"):
+//!     if step["type"] == "batch":  # independent: may run concurrently
+//!         step = op.resume_batch([perform(i) for i in step["items"]])
 //!     else:
-//!         time.sleep(random.random() * step["ms"] / 1000)
-//!         step = op.resume(None)
+//!         step = op.resume(perform(step))
 //! # step["type"] is "done" (step["json"] / step["bytes"] / step["text"]) or "error"
 //! ```
 //!
-//! A network failure is `op.resume({"network_error": str(e)})`.
+//! A network failure is `{"network_error": str(e)}` instead of a response.
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 
 use crate::cloud::{
-    self, ItemRef, Operation, Output, PutPdfOptions, Response, SessionOptions, Step,
+    self, ItemRef, Operation, Output, PutPdfOptions, Request, Response, SessionOptions, Step, Wait,
 };
 
 fn value_err(e: impl ToString) -> PyErr {
     PyValueError::new_err(e.to_string())
 }
 
+fn request_dict<'py>(py: Python<'py>, d: &Bound<'py, PyDict>, r: Request) -> PyResult<()> {
+    d.set_item("type", "request")?;
+    d.set_item("method", r.method)?;
+    d.set_item("url", r.url)?;
+    d.set_item("headers", PyList::new(py, r.headers)?)?;
+    if let Some(b) = r.body {
+        d.set_item("body", PyBytes::new(py, &b))?;
+    }
+    Ok(())
+}
+
 fn step_dict<'py>(py: Python<'py>, step: Step) -> PyResult<Bound<'py, PyDict>> {
     let d = PyDict::new(py);
     match step {
-        Step::Request(r) => {
-            d.set_item("type", "request")?;
-            d.set_item("method", r.method)?;
-            d.set_item("url", r.url)?;
-            d.set_item("headers", PyList::new(py, r.headers)?)?;
-            if let Some(b) = r.body {
-                d.set_item("body", PyBytes::new(py, &b))?;
-            }
-        }
+        Step::Request(r) => request_dict(py, &d, r)?,
         Step::Sleep { ms } => {
             d.set_item("type", "sleep")?;
             d.set_item("ms", ms)?;
+        }
+        Step::Batch(waits) => {
+            d.set_item("type", "batch")?;
+            let items = PyList::empty(py);
+            for w in waits {
+                let item = PyDict::new(py);
+                match w {
+                    Wait::Request(r) => request_dict(py, &item, r)?,
+                    Wait::Sleep { ms } => {
+                        item.set_item("type", "sleep")?;
+                        item.set_item("ms", ms)?;
+                    }
+                }
+                items.append(item)?;
+            }
+            d.set_item("items", items)?;
         }
         Step::Done(out) => {
             d.set_item("type", "done")?;
@@ -80,32 +104,47 @@ impl PyCloudOperation {
         py: Python<'py>,
         response: Option<Bound<'py, PyDict>>,
     ) -> PyResult<Bound<'py, PyDict>> {
-        let response = match response {
-            None => None,
-            Some(d) => Some(Response {
-                status: d
-                    .get_item("status")?
-                    .map(|v| v.extract())
-                    .transpose()?
-                    .unwrap_or(0),
-                status_text: d
-                    .get_item("status_text")?
-                    .map(|v| v.extract())
-                    .transpose()?
-                    .unwrap_or_default(),
-                body: d
-                    .get_item("body")?
-                    .map(|v| v.extract::<Vec<u8>>())
-                    .transpose()?
-                    .unwrap_or_default(),
-                network_error: d
-                    .get_item("network_error")?
-                    .map(|v| v.extract())
-                    .transpose()?,
-            }),
-        };
+        let response = response.map(|d| response_of(&d)).transpose()?;
         step_dict(py, self.0.resume(response))
     }
+
+    /// The next step, after a batch: one outcome per item, in order (a
+    /// response dict, or None for a sleep).
+    fn resume_batch<'py>(
+        &mut self,
+        py: Python<'py>,
+        responses: Vec<Option<Bound<'py, PyDict>>>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let responses = responses
+            .iter()
+            .map(|r| r.as_ref().map(response_of).transpose())
+            .collect::<PyResult<Vec<_>>>()?;
+        step_dict(py, self.0.resume_batch(responses))
+    }
+}
+
+fn response_of(d: &Bound<'_, PyDict>) -> PyResult<Response> {
+    Ok(Response {
+        status: d
+            .get_item("status")?
+            .map(|v| v.extract())
+            .transpose()?
+            .unwrap_or(0),
+        status_text: d
+            .get_item("status_text")?
+            .map(|v| v.extract())
+            .transpose()?
+            .unwrap_or_default(),
+        body: d
+            .get_item("body")?
+            .map(|v| v.extract::<Vec<u8>>())
+            .transpose()?
+            .unwrap_or_default(),
+        network_error: d
+            .get_item("network_error")?
+            .map(|v| v.extract())
+            .transpose()?,
+    })
 }
 
 fn item(id: String, hash: String) -> ItemRef {

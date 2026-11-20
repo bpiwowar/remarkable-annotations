@@ -103,23 +103,32 @@ plain-text scan of `/MediaBox`, then to US Letter.
 ## Cloud
 
 [`cloud`](src/cloud) is a reMarkable cloud client that does no I/O: each
-operation hands the host the HTTP requests to make, one at a time, and
-continues with the responses. The host also provides the clock and uuids.
+operation hands the host the HTTP requests to make, and continues with the
+responses. Where rmapi-js runs requests in parallel (`Promise.all`: listing
+items, a document's metadata and content, page uploads), the operation hands
+them over together as a batch, which the host runs concurrently; listing 50
+documents takes 4 round trips. The host also provides the clock and uuids.
 The same client runs in a browser, in privileged Firefox code, in Node and in
 Python.
 
 ```js
 import init, { CloudSession, cloudAuth } from "remarkable-annotations";
 
+async function perform(item) {
+  // a request, or a sleep before a retry
+  if (item.type === "sleep") {
+    await new Promise((ok) => setTimeout(ok, Math.random() * item.ms));
+    return undefined;
+  }
+  const r = await fetch(item.url, { method: item.method, headers: item.headers, body: item.body });
+  return { status: r.status, statusText: r.statusText, body: new Uint8Array(await r.arrayBuffer()) };
+}
+
 async function run(op) {
   for (let step = op.start(); ; ) {
-    if (step.type === "request") {
-      const r = await fetch(step.url, { method: step.method, headers: step.headers, body: step.body });
-      step = op.resume({ status: r.status, statusText: r.statusText, body: new Uint8Array(await r.arrayBuffer()) });
-    } else if (step.type === "sleep") {
-      await new Promise((ok) => setTimeout(ok, Math.random() * step.ms));
-      step = op.resume();
-    } else if (step.type === "done") return step; // json, bytes or text
+    if (step.type === "batch") step = op.resumeBatch(await Promise.all(step.items.map(perform)));
+    else if (step.type === "request" || step.type === "sleep") step = op.resume(await perform(step));
+    else if (step.type === "done") return step; // json, bytes or text
     else throw step.error; // {kind: "generation" | "hashNotFound" | "response" | ..., message}
   }
 }

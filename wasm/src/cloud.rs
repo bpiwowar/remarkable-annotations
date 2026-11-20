@@ -3,24 +3,31 @@
 //! An operation is driven by the host:
 //!
 //! ```js
+//! async function perform(item) {          // a request or a sleep
+//!   if (item.type === "sleep") {
+//!     await new Promise((ok) => setTimeout(ok, Math.random() * item.ms));
+//!     return undefined;
+//!   }
+//!   const r = await fetch(item.url, { method: item.method, headers: item.headers, body: item.body });
+//!   return { status: r.status, statusText: r.statusText, body: new Uint8Array(await r.arrayBuffer()) };
+//! }
 //! const op = session.listItems(false);
 //! for (let step = op.start(); ; ) {
-//!   if (step.type === "request") {
-//!     const r = await fetch(step.url, { method: step.method, headers: step.headers, body: step.body });
-//!     step = op.resume({ status: r.status, statusText: r.statusText, body: new Uint8Array(await r.arrayBuffer()) });
-//!   } else if (step.type === "sleep") {
-//!     await new Promise((ok) => setTimeout(ok, Math.random() * step.ms));
-//!     step = op.resume();
-//!   } else if (step.type === "done") return step;   // step.json / step.bytes / step.text
-//!   else throw step.error;                             // {kind, message, ...}
+//!   if (step.type === "batch")                       // independent: run them concurrently
+//!     step = op.resumeBatch(await Promise.all(step.items.map(perform)));
+//!   else if (step.type === "request" || step.type === "sleep")
+//!     step = op.resume(await perform(step));
+//!   else if (step.type === "done") return step;   // step.json / step.bytes / step.text
+//!   else throw step.error;                         // {kind, message, ...}
 //! }
 //! ```
 //!
-//! A network failure is `op.resume({ networkError: String(e) })`.
+//! A network failure is `{ networkError: String(e) }` instead of a response.
 
 use js_sys::{Array, Object, Reflect, Uint8Array};
 use remarkable_annotations::cloud::{
-    self, CloudError, ItemRef, Operation, Output, PutPdfOptions, Response, SessionOptions, Step,
+    self, CloudError, ItemRef, Operation, Output, PutPdfOptions, Request, Response, SessionOptions,
+    Step, Wait,
 };
 use serde_json::{Map, Value};
 use wasm_bindgen::prelude::*;
@@ -44,25 +51,43 @@ fn error_value(e: &CloudError) -> JsValue {
     o.into()
 }
 
+fn set_request(o: &Object, r: Request) {
+    set(o, "type", "request");
+    set(o, "method", r.method);
+    set(o, "url", r.url);
+    let headers = Array::new();
+    for (k, v) in r.headers {
+        headers.push(&Array::of2(&k.into(), &v.into()));
+    }
+    set(o, "headers", headers);
+    if let Some(b) = r.body {
+        set(o, "body", Uint8Array::from(b.as_slice()));
+    }
+}
+
 fn step_value(step: Step) -> JsValue {
     let o = Object::new();
     match step {
-        Step::Request(r) => {
-            set(&o, "type", "request");
-            set(&o, "method", r.method);
-            set(&o, "url", r.url);
-            let headers = Array::new();
-            for (k, v) in r.headers {
-                headers.push(&Array::of2(&k.into(), &v.into()));
-            }
-            set(&o, "headers", headers);
-            if let Some(b) = r.body {
-                set(&o, "body", Uint8Array::from(b.as_slice()));
-            }
-        }
+        Step::Request(r) => set_request(&o, r),
         Step::Sleep { ms } => {
             set(&o, "type", "sleep");
             set(&o, "ms", ms);
+        }
+        Step::Batch(waits) => {
+            set(&o, "type", "batch");
+            let items = Array::new();
+            for w in waits {
+                let item = Object::new();
+                match w {
+                    Wait::Request(r) => set_request(&item, r),
+                    Wait::Sleep { ms } => {
+                        set(&item, "type", "sleep");
+                        set(&item, "ms", ms);
+                    }
+                }
+                items.push(&item);
+            }
+            set(&o, "items", items);
         }
         Step::Done(out) => {
             set(&o, "type", "done");
@@ -85,6 +110,20 @@ fn get(o: &JsValue, k: &str) -> JsValue {
     Reflect::get(o, &JsValue::from_str(k)).unwrap_or(JsValue::UNDEFINED)
 }
 
+/// A response object (`{status, statusText, body}` or `{networkError}`);
+/// `undefined`/`null` after a sleep.
+fn response_of(response: &JsValue) -> Option<Response> {
+    (!response.is_undefined() && !response.is_null()).then(|| Response {
+        status: get(response, "status").as_f64().unwrap_or(0.0) as u16,
+        status_text: get(response, "statusText").as_string().unwrap_or_default(),
+        body: get(response, "body")
+            .dyn_into::<Uint8Array>()
+            .map(|b| b.to_vec())
+            .unwrap_or_default(),
+        network_error: get(response, "networkError").as_string(),
+    })
+}
+
 /// A running cloud operation.
 #[wasm_bindgen]
 pub struct CloudOperation(Operation);
@@ -99,16 +138,15 @@ impl CloudOperation {
     /// The next step, after a request (`{status, statusText, body}` or
     /// `{networkError}`) or a sleep (no argument).
     pub fn resume(&mut self, response: JsValue) -> JsValue {
-        let response = (!response.is_undefined() && !response.is_null()).then(|| Response {
-            status: get(&response, "status").as_f64().unwrap_or(0.0) as u16,
-            status_text: get(&response, "statusText").as_string().unwrap_or_default(),
-            body: get(&response, "body")
-                .dyn_into::<Uint8Array>()
-                .map(|b| b.to_vec())
-                .unwrap_or_default(),
-            network_error: get(&response, "networkError").as_string(),
-        });
-        step_value(self.0.resume(response))
+        step_value(self.0.resume(response_of(&response)))
+    }
+
+    /// The next step, after a batch: one outcome per item, in order (a
+    /// response, or `undefined` for a sleep).
+    #[wasm_bindgen(js_name = resumeBatch)]
+    pub fn resume_batch(&mut self, responses: Array) -> JsValue {
+        let responses = responses.iter().map(|r| response_of(&r)).collect();
+        step_value(self.0.resume_batch(responses))
     }
 }
 
