@@ -14,7 +14,7 @@ default-members = ["."]
 # Single version for the crate, the Python package (PyPI) and the npm package
 # (wasm/, published as `remarkable-annotations`): bump it here only.
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 
 [lib]
 name = "remarkable_annotations"
